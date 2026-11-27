@@ -26,6 +26,9 @@ SYSTEM_PROMPT = (
 )
 
 MATCHER_ONLY = frozenset({"undo"})  # never offered to the model
+# A spoken reply is the answer. Offering an "answer" tool made a model call it
+# instead of replying (smoke set on atlas, 2026-11-27).
+NOT_A_TOOL = frozenset({"answer"})
 
 
 class Executor(Protocol):
@@ -90,7 +93,7 @@ class Assistant:
         room = self.policy.rooms[session.room]
         out = []
         for a in self.policy.actions.values():
-            if a.name in MATCHER_ONLY or a.matcher_only or a.cls == NEVER or a.cls > room.max_class:
+            if a.name in MATCHER_ONLY or a.name in NOT_A_TOOL or a.matcher_only or a.cls == NEVER or a.cls > room.max_class:
                 continue
             if mode is Mode.ANSWER_ONLY and a.cls != ANSWER:
                 continue
