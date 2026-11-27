@@ -331,8 +331,8 @@ def test_undo_never_lists_lock(broker):
 
 
 def test_undo_counts_for_the_device_room(broker):
-    g = broker.new_session("guest_room")
-    broker.decide(g, matcher("light.set", device="kitchen_lamp", state="on"))
+    lr = broker.new_session("living_room")
+    broker.decide(lr, matcher("light.set", device="kitchen_lamp", state="on"))
     assert broker.recent_household_actions("kitchen") == [
         ("light.set", {"device": "kitchen_lamp", "state": "on"})
     ]
@@ -412,3 +412,34 @@ def test_text_is_normalized(broker):
     s = broker.new_session("kitchen")
     d = broker.decide(s, model("list.add", item="café"))
     assert d.allowed and d.args["item"] == "café"
+
+
+# -- regressions from the second adversarial pass ------------------------------
+
+
+def test_own_reach_room_cannot_control_other_rooms(broker):
+    g = broker.new_session("guest_room")
+    assert broker.decide(g, matcher("light.set", device="kitchen_lamp", state="off")).verdict is Verdict.DENY
+    assert broker.decide(g, matcher("lock.lock", device="front_door")).verdict is Verdict.DENY  # house-wide device
+    assert broker.decide(g, matcher("timer.start", minutes=5)).allowed
+
+
+def test_house_reach_room_can_control_other_rooms(broker):
+    lr = broker.new_session("living_room")
+    assert broker.decide(lr, matcher("light.set", device="kitchen_lamp", state="off")).allowed
+
+
+def test_matcher_label_above_class1_refused(broker):
+    s = broker.new_session("kitchen")
+    broker.open_window(s, "ben")
+    assert broker.decide(s, matcher("calendar.add", title="x", when="now")).verdict is Verdict.DENY
+    assert broker.decide(s, matcher("lock.unlock", device="front_door")).verdict is Verdict.DENY
+
+
+@pytest.mark.parametrize("bad", [
+    "Daㅤvid", "ᅟ", "⠀⠀", "a b", "a b",
+    "e" + "́" * 5,
+])
+def test_invisible_and_separator_text_refused(broker, bad):
+    s = broker.new_session("kitchen")
+    assert broker.decide(s, model("list.add", item=bad)).verdict is Verdict.DENY

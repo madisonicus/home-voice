@@ -91,3 +91,26 @@ def test_duplicate_key_refused(tmp_path):
     f.write_text(EXAMPLE.read_text() + "\n  lock.unlock: {class: 1, args: {device: {type: device, kind: lock}}}\n")
     with pytest.raises(PolicyError, match="duplicate"):
         load_policy(f)
+
+
+@pytest.mark.parametrize("fn", [
+    lambda r: r["actions"]["lock.lock"].update(undoable=True),  # lock's revert is unlock
+    lambda r: r["rooms"]["guest_room"].update(reach="everywhere"),
+    lambda r: r["actions"]["calendar.add"].update(read_only="yes"),
+])
+def test_second_pass_bad_policy_refused(raw, fn):
+    with pytest.raises(PolicyError):
+        parse_policy(mutate(raw, fn))
+
+
+def test_personal_output_write_still_tainted(raw):
+    """Only read_only exempts a class 2 action from the taint rule."""
+    p = parse_policy(mutate(raw, lambda r: r["actions"]["calendar.add"].update(personal_output=True)))
+    assert not p.actions["calendar.add"].read_only
+
+
+def test_non_string_key_is_a_policy_error(tmp_path):
+    f = tmp_path / "p.yml"
+    f.write_text(EXAMPLE.read_text().replace("rooms:\n", "rooms:\n  ? [a]\n  : {max_class: 1}\n", 1))
+    with pytest.raises(PolicyError):
+        load_policy(f)

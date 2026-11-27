@@ -14,7 +14,7 @@ settings:
 rooms:
   kitchen: {max_class: 3}
   living_room: {max_class: 3}
-  guest_room: {max_class: 1}
+  guest_room: {max_class: 1, reach: own}  # only the guest room's own devices
 
 devices:
   kitchen_lamp: {kind: light, room: kitchen, aliases: [kitchen, kitchen light]}
@@ -54,6 +54,7 @@ actions:
   calendar.read:
     class: 2
     personal_output: true
+    read_only: true
   calendar.add:
     class: 2
     args:

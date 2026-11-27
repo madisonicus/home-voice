@@ -45,7 +45,13 @@ The rules that make it hold:
   phone, which shows the exact fields. A spoken "yes" is never approval,
   because the TV can say yes.
 - **Common commands skip the model.** A fixed-sentence matcher handles timers,
-  lights and lists. It has no sentence for anything above class 1.
+  lights and lists. It has no sentence for anything above class 1, and the
+  broker refuses a "matcher" proposal above class 1 anyway.
+- **Rooms can be fenced.** A room with `reach: own` (a guest room) controls
+  only its own devices.
+- **Text shown on a phone is plain.** Bidi overrides, zero-width and invisible
+  characters, line separators and stacked accents are refused, so the phone
+  shows what will really be sent.
 - **Undo only what is safe to revert.** The revert of "lock" is "unlock", so
   the policy marks each action `undoable` or not, and the default is not.
 - **Fail closed.** A missing or garbled mode file means answer-only. A policy

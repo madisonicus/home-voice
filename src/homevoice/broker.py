@@ -199,6 +199,11 @@ class Broker:
 
         cls = max([action.cls] + [d.cls for d in devices if d.cls is not None])
 
+        if proposal.source is Source.MATCHER and cls > HOUSEHOLD:
+            # The matcher has no sentence above class 1. A proposal that says
+            # it came from the matcher and is above class 1 is a bug or a lie.
+            return self._deny(name, cls, "matcher proposal above class 1", "I can't do that.")
+
         if mode is Mode.ANSWER_ONLY and cls != ANSWER:
             return self._deny(name, cls, "mode answer-only", "I can only answer questions right now.")
 
@@ -206,9 +211,11 @@ class Broker:
             where = action.instead or "Slack or Claude"
             return self._deny(name, cls, "class 4", f"I don't do that by voice. Use {where}.")
 
-        cap = self.policy.rooms[session.room].max_class
-        if cls > cap:
-            return self._deny(name, cls, f"room cap {cap}", "I can't do that from this room.")
+        room = self.policy.rooms[session.room]
+        if cls > room.max_class:
+            return self._deny(name, cls, f"room cap {room.max_class}", "I can't do that from this room.")
+        if room.reach == "own" and any(d.room != session.room for d in devices):
+            return self._deny(name, cls, "device outside an own-reach room", "I can only do that for this room.")
 
         if cls == HANDOFF:
             if not self.idp_up():
@@ -225,7 +232,7 @@ class Broker:
             if session.web:
                 return self._deny(name, cls, "personal data and web content never meet",
                                   "Say the wake word again to start fresh, then ask me.")
-            if proposal.source is Source.MODEL and session.tainted and not action.personal_output:
+            if proposal.source is Source.MODEL and session.tainted and not action.read_only:
                 return self._deny(name, cls, "tainted session, model proposal, personal write",
                                   "Say the wake word again to start fresh, then ask me.")
             if not self._window_open(session):

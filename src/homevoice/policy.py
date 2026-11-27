@@ -74,6 +74,8 @@ class Action:
     # True: "undo" may revert it. Off unless the policy says so, because some
     # reverts are riskier than the action (the revert of "lock" is "unlock").
     undoable: bool = False
+    # True: only reads. Exempt from the taint rule for model-proposed class 2.
+    read_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -89,6 +91,8 @@ class Device:
 class Room:
     name: str
     max_class: int
+    # "house": may control devices anywhere. "own": only devices in this room.
+    reach: str = "house"
 
 
 @dataclass(frozen=True)
@@ -127,6 +131,12 @@ def _is_int(v: Any) -> bool:
     return isinstance(v, int) and not isinstance(v, bool)
 
 
+# Control, format, private-use, unassigned, line and paragraph separators.
+_BAD_CATEGORIES = frozenset({"Cc", "Cf", "Co", "Cs", "Cn", "Zl", "Zp"})
+# Letters and symbols that draw as blank space.
+_INVISIBLE = frozenset("\u115f\u1160\u3164\uffa0\u2800")
+
+
 def clean_text(v: Any) -> str | None:
     """NFC text with no control or format characters, or None.
 
@@ -136,8 +146,13 @@ def clean_text(v: Any) -> str | None:
     if not isinstance(v, str):
         return None
     v = unicodedata.normalize("NFC", v).strip()
-    if any(unicodedata.category(c) in ("Cc", "Cf", "Co", "Cs", "Cn") for c in v):
+    if any(unicodedata.category(c) in _BAD_CATEGORIES or c in _INVISIBLE for c in v):
         return None
+    run = 0
+    for c in v:
+        run = run + 1 if unicodedata.category(c) == "Mn" else 0
+        if run > 3:  # stacked combining marks can hide or overdraw text
+            return None
     return v or None
 
 
@@ -185,6 +200,16 @@ def _arg(name: str, spec: Any, where: str) -> ArgSpec:
 
 
 def parse_policy(raw: Any, source: str = "") -> Policy:
+    try:
+        return _parse_policy(raw, source)
+    except PolicyError:
+        raise
+    except (TypeError, AttributeError, ValueError, KeyError) as e:
+        # Any malformed shape stops the broker with one kind of error.
+        raise PolicyError(f"policy: malformed: {e!r}") from e
+
+
+def _parse_policy(raw: Any, source: str = "") -> Policy:
     if not isinstance(raw, dict):
         raise PolicyError("policy: top level must be a mapping")
     _check_keys(raw, {"version", "settings", "rooms", "devices", "actions"}, "policy")
@@ -206,8 +231,11 @@ def parse_policy(raw: Any, source: str = "") -> Policy:
     for name, r in (_req(raw, "rooms", "policy") or {}).items():
         where = f"rooms.{name}"
         r = r or {}
-        _check_keys(r, {"max_class"}, where)
-        rooms[name] = Room(name=name, max_class=_cls(_req(r, "max_class", where), where))
+        _check_keys(r, {"max_class", "reach"}, where)
+        reach = r.get("reach", "house")
+        if reach not in ("house", "own"):
+            raise PolicyError(f"{where}.reach: must be 'house' or 'own'")
+        rooms[name] = Room(name=name, max_class=_cls(_req(r, "max_class", where), where), reach=reach)
     if not rooms:
         raise PolicyError("policy: at least one room is needed")
 
@@ -235,7 +263,7 @@ def parse_policy(raw: Any, source: str = "") -> Policy:
             raise PolicyError(f"{where}: must be a mapping")
         _check_keys(
             a,
-            {"class", "args", "untrusted_output", "personal_output", "outbound", "instead", "undoable"},
+            {"class", "args", "untrusted_output", "personal_output", "outbound", "instead", "undoable", "read_only"},
             where,
         )
         cls = _cls(_req(a, "class", where), where)
@@ -244,7 +272,7 @@ def parse_policy(raw: Any, source: str = "") -> Policy:
             if spec.type == "device" and not any(d.kind == spec.kind for d in devices.values()):
                 raise PolicyError(f"{where}.args.{spec.name}: no device of kind {spec.kind!r}")
         flags = {}
-        for flag in ("untrusted_output", "personal_output", "outbound", "undoable"):
+        for flag in ("untrusted_output", "personal_output", "outbound", "undoable", "read_only"):
             v = a.get(flag, False)
             if not isinstance(v, bool):
                 raise PolicyError(f"{where}.{flag}: must be true or false")
@@ -267,9 +295,19 @@ def parse_policy(raw: Any, source: str = "") -> Policy:
             outbound=outbound,
             instead=str(a.get("instead", "")),
             undoable=flags["undoable"],
+            read_only=flags["read_only"],
         )
     if not actions:
         raise PolicyError("policy: at least one action is needed")
+
+    # An undoable action must not touch a kind of device that a class 2+
+    # action also touches: the revert of "lock" is "unlock".
+    risky_kinds = {
+        s.kind for a in actions.values() if a.cls >= PERSONAL for s in a.args if s.type == "device"
+    }
+    for a in actions.values():
+        if a.undoable and any(s.type == "device" and s.kind in risky_kinds for s in a.args):
+            raise PolicyError(f"actions.{a.name}: cannot be undoable, a class 2+ action uses the same device kind")
 
     return Policy(
         actions=actions,
@@ -307,6 +345,6 @@ def load_policy(path: str | Path) -> Policy:
     p = Path(path)
     try:
         raw = yaml.load(p.read_text(), Loader=_StrictLoader)  # noqa: S506 - SafeLoader subclass
-    except (OSError, yaml.YAMLError) as e:
+    except (OSError, yaml.YAMLError, TypeError, ValueError) as e:
         raise PolicyError(f"{p}: cannot read: {e}") from e
     return parse_policy(raw, source=str(p))
