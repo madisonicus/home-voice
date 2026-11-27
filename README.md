@@ -10,8 +10,8 @@ stranger. Any of these can tell a model to "unlock the front door". So in this
 project the model only proposes. A small deterministic program, the **action
 broker**, decides, from a policy file, in code.
 
-Status: early. The broker, the intent matcher and the policy tests exist. The
-speech hub, the model loop and the phone handoff come next.
+Status: early. The broker, the intent matcher, the model loop and the policy
+tests exist. The speech hub and the phone handoff come next.
 
 ## How it decides
 
@@ -73,6 +73,9 @@ threat model.
 | `src/homevoice/policy.py` | Loads and checks the policy file |
 | `src/homevoice/matcher.py` | Fixed sentences that run without the model |
 | `src/homevoice/mode.py` | The `full` / `answer-only` / `off` switch |
+| `src/homevoice/assistant.py` | One spoken turn: matcher, then the model, the broker deciding each call |
+| `src/homevoice/llm.py` | The model client (Ollama today, the fleet gateway later) |
+| `src/homevoice/smoke.py`, `smoke/cases.yml` | Tool choice and latency of a real model, with a demo executor |
 | `examples/policy.yml` | The policy format, with made-up devices |
 | `tests/` | The policy tests: they prove the rules without a model |
 
@@ -85,6 +88,16 @@ at your own file in the format of `examples/policy.yml`.
 python3 -m pip install -e '.[test]'
 python3 -m pytest
 ```
+
+## Try a model
+
+```bash
+python3 -m homevoice.smoke --model <ollama model> --base-url http://127.0.0.1:11434
+```
+
+It measures whether the model picks the right tool and how fast. It touches
+nothing real. Safety does not depend on its score: the policy tests prove the
+rules without a model.
 
 ## License
 
