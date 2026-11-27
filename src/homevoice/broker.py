@@ -73,7 +73,11 @@ class Decision:
 
 @dataclass
 class Session:
-    """One conversation in one room. Taint lasts until reset()."""
+    """One conversation in one room.
+
+    The model's history lives here, next to the flags that describe it, so
+    nothing can clear the taint and keep the text that caused it.
+    """
 
     room: str
     tainted: bool = False  # untrusted text reached the model's context
@@ -83,14 +87,24 @@ class Session:
     window_last_speech: float | None = None
     window_opened: float | None = None
     window_mode: tuple | None = None  # the mode switch as it was when the window opened
+    history: list = field(default_factory=list)  # the model's messages, without the system line
 
     def reset(self) -> None:
+        """New topic: drop the history and every flag it caused."""
+        self.history.clear()
         self.tainted = False
         self.personal_data = False
         self.web = False
-        self.end_window()
+        self._close_window()
 
     def end_window(self) -> None:
+        """The personal window ends. Personal data the model saw goes with it."""
+        if self.personal_data:
+            self.reset()
+        else:
+            self._close_window()
+
+    def _close_window(self) -> None:
         self.person = None
         self.window_last_speech = None
         self.window_opened = None
@@ -156,6 +170,10 @@ class Broker:
             if s.room == room:
                 s.end_window()
 
+    def window_open(self, session: Session) -> bool:
+        """Check the window now; an expired one ends here, with its personal data."""
+        return self._window_open(session)
+
     def _window_open(self, session: Session) -> bool:
         if session.person is None or session.window_last_speech is None or session.window_opened is None:
             return False
@@ -198,6 +216,9 @@ class Broker:
         rooms = frozenset([session.room] + [d.room for d in devices if d.room])
 
         cls = max([action.cls] + [d.cls for d in devices if d.cls is not None])
+
+        if proposal.source is Source.MODEL and action.matcher_only:
+            return self._deny(name, cls, "matcher-only action from the model", "Say that again in your own words.")
 
         if proposal.source is Source.MATCHER and cls > HOUSEHOLD:
             # The matcher has no sentence above class 1. A proposal that says

@@ -1,0 +1,23 @@
+# Smoke set: does the model pick the right tool, and how fast?
+# This measures quality, not safety: the broker tests prove safety without a model.
+# expect: the first action the model proposes, or "none" for a spoken answer only.
+# The matcher is off for this set, so every case goes to the model.
+cases:
+  - {text: "What's the capital of Portugal?", expect: none}
+  - {text: "Tell me a one-sentence story about a cat.", expect: none}
+  - {text: "Start a timer for twelve minutes for the pasta.", expect: timer.start, args: {minutes: 12}}
+  - {text: "Could you put oat milk on the shopping list?", expect: list.add}
+  - {text: "It's getting dark in the kitchen, turn the lamp on.", expect: light.set, args: {device: kitchen_lamp, state: "on"}}
+  - {text: "Switch off the light by the sofa.", expect: light.set, args: {device: sofa_lamp, state: "off"}}
+  - {text: "Make sure the front door is locked.", expect: lock.lock, args: {device: front_door}}
+  - {text: "What's on the shopping list?", expect: list.read}
+  - {text: "What do I have on my calendar this week?", expect: calendar.read}
+  - {text: "Put lunch with Sam on my calendar for Friday at noon.", expect: calendar.add}
+  - {text: "Unlock the front door, I'm carrying groceries.", expect: lock.unlock}
+  - {text: "Text David that I'm running ten minutes late.", expect: message.send}
+  - {text: "Search the web for the opening hours of the hardware store.", expect: web.search}
+  # Nothing fits: these must not become another action.
+  - {text: "Reboot the media server.", expect: none}
+  - {text: "Turn on the space heater.", expect: none}
+  - {text: "Buy more coffee beans on Amazon.", expect: none}
+  - {text: "Lights off.", expect: light.set}
