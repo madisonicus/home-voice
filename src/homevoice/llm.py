@@ -64,6 +64,30 @@ def check_base_url(url: str) -> None:
 
 
 PRIORITY_TIERS = (0, 1, 2)  # batch, chat, voice
+MAX_KEY_LEN = 4096
+
+
+class Secret:
+    """Holds a key so that repr, str, asdict and vars never show it."""
+
+    __slots__ = ("_value",)
+
+    def __init__(self, value: str) -> None:
+        self._value = value
+
+    def reveal(self) -> str:
+        return self._value
+
+    def __repr__(self) -> str:
+        return "Secret(***)"
+
+    __str__ = __repr__
+
+    def __deepcopy__(self, memo: dict) -> "Secret":
+        return self
+
+    def __reduce__(self):
+        raise TypeError("a Secret cannot be pickled")
 
 
 def read_priority_key(path: str) -> str:
@@ -72,32 +96,42 @@ def read_priority_key(path: str) -> str:
     It must be a regular file that only its owner can read, so a mistake in
     deployment shows up here instead of as a key every user on the box holds.
     """
-    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    # O_NONBLOCK so a FIFO at the path cannot hang us before the check below.
+    flags = os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NOCTTY", 0)
+    fd = os.open(path, flags)
     try:
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode):
             raise ValueError(f"priority key {path!r} is not a regular file")
         if st.st_mode & 0o077:
             raise ValueError(f"priority key {path!r} is readable by others; chmod 600 it")
-        with os.fdopen(fd, "r", encoding="utf-8") as f:
+        if st.st_uid != os.geteuid():
+            raise ValueError(f"priority key {path!r} is not owned by this user")
+        if st.st_size > MAX_KEY_LEN + 2:
+            raise ValueError(f"priority key {path!r} is too long")
+        with os.fdopen(fd, "rb") as f:
             fd = -1
-            key = f.read(4097).strip()
+            raw = f.read(MAX_KEY_LEN + 3)
     finally:
         if fd >= 0:
             os.close(fd)
-    if not key or len(key) > 4096 or any(c.isspace() for c in key):
+    try:
+        key = raw.decode("utf-8").strip()
+    except UnicodeDecodeError:
+        raise ValueError(f"priority key {path!r} is not UTF-8") from None
+    if not key or len(key) > MAX_KEY_LEN or any(c.isspace() for c in key):
         raise ValueError(f"priority key {path!r} is empty, too long or has spaces")
     return key
 
 
-@dataclass
+@dataclass(frozen=True)
 class OllamaClient:
     """Ollama's /api/chat, with tools, no streaming, thinking off for voice.
 
     ``priority`` asks the server for a scheduling tier (2 is voice). A server
     that supports tiers honors one only with the matching key, so the tier is
-    granted by holding the key file, never by asking. The key never appears in
-    the client's repr.
+    granted by holding the key file, never by asking. The client is frozen, so
+    its URL cannot change after the check, and the key is held as a Secret.
     """
 
     model: str
@@ -107,30 +141,32 @@ class OllamaClient:
     headers: dict[str, str] = field(default_factory=dict, repr=False)  # e.g. a gateway bearer token later
     priority: int | None = None
     priority_key_file: str | None = None
-    _priority_key: str | None = field(default=None, init=False, repr=False)
+    _priority_key: Secret | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         check_base_url(self.base_url)
-        if self.priority is None:
+        if self.priority is None or self.priority == 0:
             if self.priority_key_file is not None:
-                raise ValueError("priority_key_file given without a priority")
-            return
+                raise ValueError("priority_key_file needs a priority above 0")
+            if self.priority is None:
+                return
         if type(self.priority) is not int or self.priority not in PRIORITY_TIERS:
             raise ValueError(f"priority must be one of {PRIORITY_TIERS}")
         if self.priority > 0:
             if self.priority_key_file is None:
                 raise ValueError("a priority above 0 needs priority_key_file")
-            self._priority_key = read_priority_key(self.priority_key_file)
+            object.__setattr__(self, "_priority_key", Secret(read_priority_key(self.priority_key_file)))
 
     def _options(self) -> dict[str, Any]:
         options: dict[str, Any] = {"temperature": 0}
         if self.priority is not None:
             options["priority"] = self.priority
         if self._priority_key is not None:
-            options["priority_key"] = self._priority_key
+            options["priority_key"] = self._priority_key.reveal()
         return options
 
     def chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> Reply:
+        check_base_url(self.base_url)  # again, in case of object.__setattr__
         body = {
             "model": self.model,
             "messages": messages,

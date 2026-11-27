@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import dataclasses
 import io
 import json
 import os
+import pickle
 
 import pytest
 
@@ -103,3 +105,60 @@ def test_bad_key_content_is_refused(tmp_path, content):
 def test_key_only_goes_to_loopback_or_https(key_file):
     with pytest.raises(ValueError):
         OllamaClient("m", base_url="http://10.0.0.5:11434", priority=2, priority_key_file=key_file)
+
+
+def test_tier_zero_with_key_file_is_refused(key_file):
+    with pytest.raises(ValueError):
+        OllamaClient("m", priority=0, priority_key_file=key_file)
+
+
+def test_url_cannot_change_after_the_check(key_file):
+    c = OllamaClient("m", priority=2, priority_key_file=key_file)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        c.base_url = "http://10.0.0.5:11434"
+
+
+def test_url_rechecked_at_send(opener, key_file):
+    c = OllamaClient("m", priority=2, priority_key_file=key_file)
+    object.__setattr__(c, "base_url", "http://10.0.0.5:11434")
+    with pytest.raises(ValueError):
+        c.chat([], [])
+    assert opener.bodies == []
+
+
+def test_key_not_in_asdict_vars_or_pickle(key_file):
+    c = OllamaClient("m", priority=2, priority_key_file=key_file)
+    assert "s3cret" not in repr(dataclasses.asdict(c))
+    assert "s3cret" not in repr(vars(c))
+    with pytest.raises(TypeError):
+        pickle.dumps(c)
+
+
+def test_fifo_key_is_refused_without_hanging(tmp_path):
+    p = tmp_path / "fifo"
+    os.mkfifo(p, 0o600)
+    with pytest.raises(ValueError, match="regular file"):
+        read_priority_key(str(p))
+
+
+def test_directory_key_is_refused(tmp_path):
+    d = tmp_path / "dir"
+    d.mkdir(mode=0o700)
+    with pytest.raises((ValueError, OSError)):
+        read_priority_key(str(d))
+
+
+def test_overlong_key_is_refused_not_cut(tmp_path):
+    p = tmp_path / "k"
+    p.write_text("x" * 4096 + "y")
+    os.chmod(p, 0o600)
+    with pytest.raises(ValueError):
+        read_priority_key(str(p))
+
+
+def test_non_utf8_key_is_refused(tmp_path):
+    p = tmp_path / "k"
+    p.write_bytes(b"\xff\xfe")
+    os.chmod(p, 0o600)
+    with pytest.raises(ValueError):
+        read_priority_key(str(p))
