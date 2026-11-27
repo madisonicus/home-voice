@@ -32,11 +32,11 @@ The rules that make it hold:
   model refusing, so any model can drive it, abliterated ones included.
 - **A voice is not identity.** Anyone in the room gets class 0 and 1. Personal
   data needs a passkey approval on the person's phone, and the approval ends
-  after 2 minutes of quiet, a press of the mute button, or a flip of the mode
-  switch.
+  after 2 minutes of quiet, 10 minutes in all, a press of the mute button, or
+  any flip of the mode switch.
 - **Untrusted text cannot act.** Web results, messages, shared list items and
   anything a personal read returns taint the session. A tainted session gets
-  no model-proposed household actions. This breaks the
+  no model-proposed household actions and no model-proposed personal writes. This breaks the
   ["lethal trifecta"](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/)
   of private data, untrusted content and a way to act.
 - **Personal data and the web never meet.** A session that read your calendar
@@ -45,10 +45,18 @@ The rules that make it hold:
   phone, which shows the exact fields. A spoken "yes" is never approval,
   because the TV can say yes.
 - **Common commands skip the model.** A fixed-sentence matcher handles timers,
-  lights and lists. It has no sentence for anything above class 1.
+  lights and lists. It has no sentence for anything above class 1, and the
+  broker refuses a "matcher" proposal above class 1 anyway.
+- **Rooms can be fenced.** A room with `reach: own` (a guest room) controls
+  only its own devices.
+- **Text shown on a phone is plain.** Bidi overrides, zero-width and invisible
+  characters, line separators and stacked accents are refused, so the phone
+  shows what will really be sent.
+- **Undo only what is safe to revert.** The revert of "lock" is "unlock", so
+  the policy marks each action `undoable` or not, and the default is not.
 - **Fail closed.** A missing or garbled mode file means answer-only. A policy
-  file that does not parse, or names something that does not exist, stops the
-  broker. No identity provider means no personal requests, never a fallback to
+  file that does not parse, has a duplicate key or an unbounded value, or
+  names something that does not exist, stops the broker. No identity provider means no personal requests, never a fallback to
   a spoken yes.
 
 The design follows

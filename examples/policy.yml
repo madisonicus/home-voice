@@ -1,0 +1,73 @@
+# Example voice policy. The format only: the real file describes the house and
+# lives in the private fleet repo (identity/voice-actions.yml). Every device,
+# room and name here is made up.
+#
+# Classes: 0 answer, 1 household (anyone in the room), 2 personal (phone
+# approval), 3 handoff (finished on the person's phone), 4 never by voice.
+version: 1
+
+settings:
+  personal_idle_seconds: 120  # a personal window ends after this much quiet
+  personal_max_seconds: 600   # and after this long, however much talk
+  undo_seconds: 300           # "undo" reverts this room's class 1 actions in this window
+
+rooms:
+  kitchen: {max_class: 3}
+  living_room: {max_class: 3}
+  guest_room: {max_class: 1, reach: own}  # only the guest room's own devices
+
+devices:
+  kitchen_lamp: {kind: light, room: kitchen, aliases: [kitchen, kitchen light]}
+  sofa_lamp: {kind: light, room: living_room, aliases: [sofa light, living room]}
+  space_heater: {kind: light, room: living_room, class: 4}  # a smart plug, not a lamp
+  front_door: {kind: lock, aliases: [front door, door]}
+
+actions:
+  answer: {class: 0}
+  web.search:
+    class: 0
+    args: {query: {type: str, max_len: 200}}
+    outbound: true
+    untrusted_output: true
+  timer.start:
+    class: 1
+    args: {minutes: {type: int, min: 1, max: 720}}
+    undoable: true
+  list.add:
+    class: 1
+    args: {item: {type: str, max_len: 60}}
+    undoable: true
+  list.read:
+    class: 1
+    untrusted_output: true  # anyone can add items, so items are untrusted text
+  light.set:
+    class: 1
+    args:
+      device: {type: device, kind: light}
+      state: {type: enum, values: ["on", "off"]}
+    undoable: true
+  lock.lock:
+    class: 1
+    args: {device: {type: device, kind: lock}}
+    # not undoable: its revert is unlock, which is class 3
+  undo: {class: 1}
+  calendar.read:
+    class: 2
+    personal_output: true
+    read_only: true
+  calendar.add:
+    class: 2
+    args:
+      title: {type: str, max_len: 80}
+      when: {type: str, max_len: 40}
+  lock.unlock:
+    class: 3
+    args: {device: {type: device, kind: lock}}
+  message.send:
+    class: 3
+    args:
+      to: {type: str, max_len: 60}
+      text: {type: str, max_len: 500}
+  fleet.change:
+    class: 4
+    instead: "Slack, in fleet-ops"
