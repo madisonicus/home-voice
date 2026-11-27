@@ -58,6 +58,12 @@ The rules that make it hold:
   conversation that saw the personal data is dropped too.
 - **Nothing leaves the box by accident.** The model client talks plain http
   only to loopback, ignores proxy settings and refuses redirects.
+- **Voice goes first, but only voice can say so.** A spoken turn waits on the
+  model, so on a shared model server the hub's requests take the highest
+  priority, ahead of chat and batch work. The priority is granted by a trusted
+  hop from who the caller is (the identity gateway, or an allowlisted listener
+  or token on the server), never by a header or option the caller sets, or
+  every client could claim it.
 - **Fail closed.** A missing or garbled mode file means answer-only. A policy
   file that does not parse, has a duplicate key or an unbounded value, or
   names something that does not exist, stops the broker. No identity provider means no personal requests, never a fallback to
