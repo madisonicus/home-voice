@@ -155,3 +155,102 @@ def test_system_prompt_names_room(setup):
     s = broker.new_session("living_room")
     asst.handle(s, "hello")
     assert "living room" in llm.messages[0][0]["content"]
+
+
+# -- regressions from the adversarial review of PR #4 -------------------------
+
+
+def test_personal_data_dropped_when_window_ends(setup):
+    asst, broker, llm, ex = setup(call("calendar.read"), Reply("Dentist Tuesday."), Reply("ok"))
+    s = broker.new_session("kitchen")
+    broker.open_window(s, "ben")
+    asst.handle(s, "what's on my calendar")
+    broker.mute_pressed("kitchen")
+    asst.handle(s, "what was on it again?")
+    assert not any("Dentist" in str(m.get("content")) for m in llm.messages[-1])
+
+
+def test_personal_data_dropped_when_window_expires(setup):
+    asst, broker, llm, ex = setup(call("calendar.read"), Reply("Dentist Tuesday."), Reply("ok"))
+    t = [1000.0]
+    broker.clock = lambda: t[0]
+    s = broker.new_session("kitchen")
+    broker.open_window(s, "ben")
+    asst.handle(s, "what's on my calendar")
+    t[0] += 3600
+    asst.handle(s, "what was on it again?")
+    assert not any("Dentist" in str(m.get("content")) for m in llm.messages[-1])
+
+
+def test_every_call_gets_a_result_and_say_reports_what_ran(setup):
+    asst, broker, llm, ex = setup(Reply("", (
+        ToolCall(tool_name("lock.lock"), {"device": "front_door"}),
+        ToolCall(tool_name("lock.unlock"), {"device": "front_door"}),
+        ToolCall(tool_name("timer.start"), {"minutes": 5}),
+    )))
+    s = broker.new_session("kitchen")
+    turn = asst.handle(s, "x")
+    assert "front_door is locked" in turn.say and "phone" in turn.say
+    tool_msgs = [m for m in s.history if m["role"] == "tool"]
+    assert len(tool_msgs) == 3
+    assert "not done" in tool_msgs[1]["content"] and tool_msgs[2]["content"] == "not run"
+    assert ex.timers == []
+
+
+def test_model_cannot_undo(setup):
+    asst, broker, llm, ex = setup(call("undo"))
+    s = broker.new_session("kitchen")
+    assert asst.handle(s, "undo whatever").decisions[0].verdict is Verdict.DENY
+
+
+def test_session_reset_drops_history(setup):
+    asst, broker, llm, ex = setup(call("web.search", query="x"), Reply("r"), call("light.set", device="kitchen_lamp", state="on"), Reply("ok"))
+    s = broker.new_session("kitchen")
+    asst.handle(s, "search")
+    s.reset()  # the broker's own API, not Assistant.reset
+    assert s.history == []
+
+
+def test_calls_per_turn_capped(setup):
+    asst, broker, llm, ex = setup(Reply("", tuple(ToolCall(tool_name("timer.start"), {"minutes": 1}) for _ in range(200))))
+    s = broker.new_session("kitchen")
+    turn = asst.handle(s, "x")
+    assert len(ex.timers) == 6 and "more than" in turn.say
+
+
+@pytest.mark.parametrize("url", ["http://10.0.0.5:11434", "http://atlas:11434", "ftp://127.0.0.1", "http://", "file:///etc/passwd"])
+def test_client_refuses_non_loopback_http(url):
+    from homevoice.llm import OllamaClient
+    with pytest.raises(ValueError):
+        OllamaClient(model="m", base_url=url)
+
+
+@pytest.mark.parametrize("url", ["http://127.0.0.1:11434", "http://localhost:11434", "http://[::1]:11434", "https://gw.example/"])
+def test_client_accepts_loopback_or_https(url):
+    from homevoice.llm import OllamaClient
+    OllamaClient(model="m", base_url=url)
+
+
+def test_client_ignores_proxy_and_refuses_redirect(monkeypatch):
+    import http.server
+    import threading
+    from homevoice.llm import OllamaClient
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.send_response(302)
+            self.send_header("Location", "http://127.0.0.2:9/steal")
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    monkeypatch.setenv("http_proxy", "http://127.0.0.3:1")
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.3:1")
+    client = OllamaClient(model="m", base_url=f"http://127.0.0.1:{srv.server_port}")
+    import urllib.error
+    with pytest.raises(urllib.error.HTTPError, match="refused redirect"):
+        client.chat([], [])
+    srv.shutdown()

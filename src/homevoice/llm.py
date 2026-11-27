@@ -7,8 +7,11 @@ Both speak the same chat-with-tools shape, so only the client changes.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import time
+import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -31,6 +34,33 @@ class LLMClient(Protocol):
     def chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> Reply: ...
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(req.full_url, code, f"refused redirect to {newurl}", headers, fp)
+
+
+# No proxy (the environment's http_proxy must not see the conversation) and
+# no redirects (a 302 must not carry a token or the conversation elsewhere).
+_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+
+
+def check_base_url(url: str) -> None:
+    """Plain http only to loopback; anything else must be https (the gateway)."""
+    u = urllib.parse.urlsplit(url)
+    if u.scheme == "https" and u.hostname:
+        return
+    if u.scheme == "http" and u.hostname:
+        host = u.hostname
+        if host == "localhost":
+            return
+        try:
+            if ipaddress.ip_address(host).is_loopback:
+                return
+        except ValueError:
+            pass
+    raise ValueError(f"model URL must be http on loopback or https: {url!r}")
+
+
 @dataclass
 class OllamaClient:
     """Ollama's /api/chat, with tools, no streaming, thinking off for voice."""
@@ -40,6 +70,9 @@ class OllamaClient:
     timeout: float = 30.0
     think: bool = False
     headers: dict[str, str] = field(default_factory=dict)  # e.g. a gateway bearer token later
+
+    def __post_init__(self) -> None:
+        check_base_url(self.base_url)
 
     def chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> Reply:
         body = {
@@ -57,7 +90,7 @@ class OllamaClient:
             method="POST",
         )
         start = time.monotonic()
-        with urllib.request.urlopen(req, timeout=self.timeout) as resp:  # noqa: S310 - fixed URL scheme from config
+        with _OPENER.open(req, timeout=self.timeout) as resp:
             data = json.load(resp)
         seconds = time.monotonic() - start
         msg = data.get("message") or {}

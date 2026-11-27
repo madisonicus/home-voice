@@ -76,6 +76,8 @@ class Action:
     undoable: bool = False
     # True: only reads. Exempt from the taint rule for model-proposed class 2.
     read_only: bool = False
+    # True: only the intent matcher may propose it (the person's own words).
+    matcher_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -263,7 +265,7 @@ def _parse_policy(raw: Any, source: str = "") -> Policy:
             raise PolicyError(f"{where}: must be a mapping")
         _check_keys(
             a,
-            {"class", "args", "untrusted_output", "personal_output", "outbound", "instead", "undoable", "read_only"},
+            {"class", "args", "untrusted_output", "personal_output", "outbound", "instead", "undoable", "read_only", "matcher_only"},
             where,
         )
         cls = _cls(_req(a, "class", where), where)
@@ -272,7 +274,7 @@ def _parse_policy(raw: Any, source: str = "") -> Policy:
             if spec.type == "device" and not any(d.kind == spec.kind for d in devices.values()):
                 raise PolicyError(f"{where}.args.{spec.name}: no device of kind {spec.kind!r}")
         flags = {}
-        for flag in ("untrusted_output", "personal_output", "outbound", "undoable", "read_only"):
+        for flag in ("untrusted_output", "personal_output", "outbound", "undoable", "read_only", "matcher_only"):
             v = a.get(flag, False)
             if not isinstance(v, bool):
                 raise PolicyError(f"{where}.{flag}: must be true or false")
@@ -296,6 +298,7 @@ def _parse_policy(raw: Any, source: str = "") -> Policy:
             instead=str(a.get("instead", "")),
             undoable=flags["undoable"],
             read_only=flags["read_only"],
+            matcher_only=flags["matcher_only"] or name == "undo",
         )
     if not actions:
         raise PolicyError("policy: at least one action is needed")

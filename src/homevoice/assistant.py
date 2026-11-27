@@ -61,6 +61,7 @@ class Assistant:
         llm: LLMClient,
         executor: Executor,
         max_steps: int = 4,
+        max_calls: int = 6,
         now: Callable[[], _dt.datetime] = lambda: _dt.datetime.now().astimezone(),
         use_matcher: bool = True,
     ) -> None:
@@ -69,9 +70,9 @@ class Assistant:
         self.llm = llm
         self.executor = executor
         self.max_steps = max_steps
+        self.max_calls = max_calls
         self.now = now
         self.use_matcher = use_matcher
-        self._history: dict[int, list[dict[str, Any]]] = {}
         self._names = {tool_name(a): a for a in self.policy.actions}
 
     # -- sessions -------------------------------------------------------------
@@ -79,7 +80,6 @@ class Assistant:
     def reset(self, session: Session) -> None:
         """New topic or wake word after quiet: clears taint and history together."""
         session.reset()
-        self._history.pop(id(session), None)
 
     # -- what the model is offered ---------------------------------------------
 
@@ -90,7 +90,7 @@ class Assistant:
         room = self.policy.rooms[session.room]
         out = []
         for a in self.policy.actions.values():
-            if a.name in MATCHER_ONLY or a.cls == NEVER or a.cls > room.max_class:
+            if a.name in MATCHER_ONLY or a.matcher_only or a.cls == NEVER or a.cls > room.max_class:
                 continue
             if mode is Mode.ANSWER_ONLY and a.cls != ANSWER:
                 continue
@@ -141,6 +141,9 @@ class Assistant:
     # -- one turn -------------------------------------------------------------
 
     def handle(self, session: Session, text: str) -> Turn:
+        # Ends an expired window first, and with it any personal data the
+        # model has seen, before anything else reads the history.
+        self.broker.window_open(session)
         self.broker.heard_speech(session)
         if self.use_matcher:
             prop = match(text, self.policy)
@@ -166,9 +169,11 @@ class Assistant:
         return {"role": "system", "content": f"{SYSTEM_PROMPT} You are in the {room}. It is now {stamp}."}
 
     def _run_model(self, session: Session, text: str) -> Turn:
-        history = self._history.setdefault(id(session), [])
+        history = session.history
         messages = [self._system(session), *history, {"role": "user", "content": text}]
         turn = Turn(say="", used_model=True)
+        done: list[str] = []  # what actually ran this turn, for the spoken line
+        calls = 0
         for _ in range(self.max_steps):
             reply = self.llm.chat(messages, self.tools(session))
             turn.model_calls += 1
@@ -182,22 +187,41 @@ class Assistant:
                 "content": reply.text,
                 "tool_calls": [{"function": {"name": c.name, "arguments": c.args}} for c in reply.tool_calls],
             })
-            stop = False
+            stop: Decision | None = None
             for call in reply.tool_calls:
+                if stop is not None:
+                    # Every call gets a result in history, so the model cannot
+                    # later claim a call it never saw an answer to.
+                    messages.append({"role": "tool", "tool_name": call.name, "content": "not run"})
+                    continue
+                calls += 1
+                if calls > self.max_calls:
+                    stop = Decision(Verdict.DENY, call.name, None, "too many calls in one turn",
+                                    "That's more than I'll do at once.")
+                    turn.decisions.append(stop)
+                    messages.append({"role": "tool", "tool_name": call.name, "content": "refused: too many calls"})
+                    continue
                 action = self._names.get(call.name, call.name)
                 d = self.broker.decide(session, Proposal(action, call.args, Source.MODEL))
                 turn.decisions.append(d)
                 if d.allowed:
                     result = self.executor.execute(d.action, d.args)
+                    done.append(result)
                     messages.append({"role": "tool", "tool_name": call.name, "content": result})
                 else:
-                    # Refusal, approval or handoff: say the broker's line, not the model's.
-                    turn.say = d.say
-                    stop = True
-                    break
-            if stop:
+                    stop = d
+                    status = {
+                        Verdict.HANDOFF: "sent to the person's phone; not done until they finish it there",
+                        Verdict.APPROVAL_NEEDED: "waiting for approval on the person's phone; not done",
+                    }.get(d.verdict, f"refused: {d.reason}")
+                    messages.append({"role": "tool", "tool_name": call.name, "content": status})
+            if stop is not None:
+                # The broker's line, not the model's, plus what already ran.
+                turn.say = " ".join([*done, stop.say]).strip()
+                messages.append({"role": "assistant", "content": turn.say})
                 break
         else:
             turn.say = "Sorry, that took too many steps."
+            messages.append({"role": "assistant", "content": turn.say})
         history[:] = messages[1:][-20:]  # keep the last 20 messages, never the system line
         return turn

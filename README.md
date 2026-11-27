@@ -54,6 +54,10 @@ The rules that make it hold:
   shows what will really be sent.
 - **Undo only what is safe to revert.** The revert of "lock" is "unlock", so
   the policy marks each action `undoable` or not, and the default is not.
+- **Personal data leaves with the window.** When a personal window ends, the
+  conversation that saw the personal data is dropped too.
+- **Nothing leaves the box by accident.** The model client talks plain http
+  only to loopback, ignores proxy settings and refuses redirects.
 - **Fail closed.** A missing or garbled mode file means answer-only. A policy
   file that does not parse, has a duplicate key or an unbounded value, or
   names something that does not exist, stops the broker. No identity provider means no personal requests, never a fallback to

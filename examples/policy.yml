@@ -50,7 +50,7 @@ actions:
     class: 1
     args: {device: {type: device, kind: lock}}
     # not undoable: its revert is unlock, which is class 3
-  undo: {class: 1}
+  undo: {class: 1, matcher_only: true}
   calendar.read:
     class: 2
     personal_output: true

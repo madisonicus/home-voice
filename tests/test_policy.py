@@ -114,3 +114,8 @@ def test_non_string_key_is_a_policy_error(tmp_path):
     f.write_text(EXAMPLE.read_text().replace("rooms:\n", "rooms:\n  ? [a]\n  : {max_class: 1}\n", 1))
     with pytest.raises(PolicyError):
         load_policy(f)
+
+
+def test_undo_is_always_matcher_only(raw):
+    p = parse_policy(mutate(raw, lambda r: r["actions"].update(undo={"class": 1})))
+    assert p.actions["undo"].matcher_only
