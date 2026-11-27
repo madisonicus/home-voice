@@ -7,6 +7,7 @@ import io
 import json
 import os
 import pickle
+import stat
 
 import pytest
 
@@ -75,8 +76,10 @@ def test_key_never_in_repr(key_file):
     assert "tok" not in repr(c)
 
 
-def test_key_readable_by_others_is_refused(key_file):
-    os.chmod(key_file, 0o640)
+@pytest.mark.parametrize("extra", [stat.S_IRGRP, stat.S_IWGRP, stat.S_IROTH, stat.S_IXOTH])
+def test_key_open_to_others_is_refused(key_file, extra):
+    # Any group or other bit on top of 0600, so a loosened file is caught.
+    os.chmod(key_file, stat.S_IMODE(os.stat(key_file).st_mode) | extra)
     with pytest.raises(ValueError, match="readable by others"):
         read_priority_key(key_file)
 
