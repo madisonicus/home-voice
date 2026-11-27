@@ -47,5 +47,8 @@ The phone handoff for class 3 defeats them anyway.
 - Never add a fallback that turns a refusal into an allow: no "spoken yes"
   when the identity provider is down, no permissive default for a missing
   file.
+- GitHub Actions are pinned to full commit SHAs, with the version in a
+  comment. A tag can be moved to point at other code; a SHA cannot.
+  Dependabot proposes SHA updates weekly.
 - No house details in this repo: no device names, rooms, people, addresses,
   logs or secrets. They belong in the deployment's own policy file.
