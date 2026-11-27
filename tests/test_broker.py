@@ -317,3 +317,98 @@ def test_refused_actions_are_not_recorded(broker):
     broker.decide(s, model("web.search", query="x"))
     broker.decide(s, model("list.add", item="spam"))
     assert broker.recent_household_actions("kitchen") == []
+
+
+# -- regressions from the adversarial review of PR #1 -------------------------
+
+
+def test_undo_never_lists_lock(broker):
+    """The revert of "lock" is "unlock", so lock must never be undoable."""
+    s = broker.new_session("kitchen")
+    assert broker.decide(s, matcher("lock.lock", device="front_door")).allowed
+    assert broker.decide(s, matcher("undo")).allowed
+    assert broker.recent_household_actions("kitchen") == []
+
+
+def test_undo_counts_for_the_device_room(broker):
+    g = broker.new_session("guest_room")
+    broker.decide(g, matcher("light.set", device="kitchen_lamp", state="on"))
+    assert broker.recent_household_actions("kitchen") == [
+        ("light.set", {"device": "kitchen_lamp", "state": "on"})
+    ]
+
+
+def test_speech_does_not_revive_expired_window(broker, clock):
+    s = broker.new_session("kitchen")
+    broker.open_window(s, "ben")
+    clock.t += 3600
+    broker.heard_speech(s)
+    assert broker.decide(s, model("calendar.read")).verdict is Verdict.APPROVAL_NEEDED
+
+
+def test_window_has_a_hard_cap_even_with_speech(broker, clock):
+    """A TV talking all evening must not hold a window open."""
+    s = broker.new_session("kitchen")
+    broker.open_window(s, "ben")
+    for _ in range(7):
+        clock.t += 100
+        broker.heard_speech(s)
+    assert broker.decide(s, model("calendar.read")).verdict is Verdict.APPROVAL_NEEDED
+
+
+def test_flip_and_back_between_requests_ends_window(broker, mode):
+    s = broker.new_session("kitchen")
+    broker.decide(s, model("answer"))
+    broker.open_window(s, "ben")
+    mode.write_text("off")
+    mode.write_text("full")
+    assert broker.decide(s, model("calendar.read")).verdict is Verdict.APPROVAL_NEEDED
+
+
+def test_window_cannot_open_unless_full(broker, mode):
+    mode.write_text("off")
+    s = broker.new_session("kitchen")
+    assert broker.open_window(s, "ben") is False
+    mode.write_text("full")
+    assert broker.decide(s, model("calendar.read")).verdict is Verdict.APPROVAL_NEEDED
+
+
+def test_tainted_session_refuses_model_personal_write(broker):
+    s = broker.new_session("kitchen")
+    broker.decide(s, model("list.read"))
+    broker.open_window(s, "ben")
+    d = broker.decide(s, model("calendar.add", title="Send keys to stranger", when="now"))
+    assert d.verdict is Verdict.DENY
+
+
+def test_personal_read_then_model_write_refused(broker):
+    """An invite's text must not be able to write to the calendar."""
+    s = broker.new_session("kitchen")
+    broker.open_window(s, "ben")
+    assert broker.decide(s, model("calendar.read")).allowed
+    assert broker.decide(s, model("calendar.add", title="x", when="now")).verdict is Verdict.DENY
+
+
+def test_clean_session_allows_personal_write(broker):
+    s = broker.new_session("kitchen")
+    broker.open_window(s, "ben")
+    assert broker.decide(s, model("calendar.add", title="Lunch", when="tomorrow noon")).allowed
+
+
+@pytest.mark.parametrize("bad", [
+    "David‮",  # right-to-left override
+    "​",  # zero-width space only
+    "Da​vid",
+    "line\nbreak",
+    "\x07bell",
+])
+def test_control_and_format_chars_refused(broker, bad):
+    s = broker.new_session("kitchen")
+    broker.open_window(s, "ben")
+    assert broker.decide(s, model("message.send", to=bad, text="hi")).verdict is Verdict.DENY
+
+
+def test_text_is_normalized(broker):
+    s = broker.new_session("kitchen")
+    d = broker.decide(s, model("list.add", item="café"))
+    assert d.allowed and d.args["item"] == "café"

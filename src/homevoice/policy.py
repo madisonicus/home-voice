@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import unicodedata
+
 import yaml
 
 # Classes, from the design doc.
@@ -28,6 +30,16 @@ NEVER = 4  # never by voice
 CLASSES = (ANSWER, HOUSEHOLD, PERSONAL, HANDOFF, NEVER)
 
 ARG_TYPES = ("int", "str", "enum", "device")
+
+# Hard caps that no policy file can raise.
+MAX_STR_LEN = 1000  # longest text a phone handoff can show in full
+INT_LIMIT = 10**6
+SETTINGS_RANGE = {
+    "personal_idle_seconds": (10, 600),
+    "personal_max_seconds": (30, 3600),
+    "undo_seconds": (0, 3600),
+}
+SETTINGS_DEFAULT = {"personal_idle_seconds": 120, "personal_max_seconds": 600, "undo_seconds": 300}
 
 
 class PolicyError(ValueError):
@@ -59,6 +71,9 @@ class Action:
     outbound: bool = False
     # Spoken when the action is refused as class 4: where to do it instead.
     instead: str = ""
+    # True: "undo" may revert it. Off unless the policy says so, because some
+    # reverts are riskier than the action (the revert of "lock" is "unlock").
+    undoable: bool = False
 
 
 @dataclass(frozen=True)
@@ -82,6 +97,7 @@ class Policy:
     devices: dict[str, Device]
     rooms: dict[str, Room]
     personal_idle_seconds: int = 120
+    personal_max_seconds: int = 600
     undo_seconds: int = 300
     source: str = field(default="", compare=False)
 
@@ -107,6 +123,24 @@ def _req(d: dict[str, Any], key: str, where: str) -> Any:
     return d[key]
 
 
+def _is_int(v: Any) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+def clean_text(v: Any) -> str | None:
+    """NFC text with no control or format characters, or None.
+
+    Format characters (bidi overrides, zero-width) can make a phone show
+    something other than the real value, so they are refused, not stripped.
+    """
+    if not isinstance(v, str):
+        return None
+    v = unicodedata.normalize("NFC", v).strip()
+    if any(unicodedata.category(c) in ("Cc", "Cf", "Co", "Cs", "Cn") for c in v):
+        return None
+    return v or None
+
+
 def _cls(v: Any, where: str) -> int:
     if not isinstance(v, int) or isinstance(v, bool) or v not in CLASSES:
         raise PolicyError(f"{where}: class must be one of {CLASSES}, got {v!r}")
@@ -127,10 +161,14 @@ def _arg(name: str, spec: Any, where: str) -> ArgSpec:
     t = _req(spec, "type", where)
     if t not in ARG_TYPES:
         raise PolicyError(f"{where}: type must be one of {ARG_TYPES}, got {t!r}")
-    if t == "str" and "max_len" not in spec:
-        raise PolicyError(f"{where}: a str argument needs max_len")
-    if t == "int" and ("min" not in spec or "max" not in spec):
-        raise PolicyError(f"{where}: an int argument needs min and max")
+    if t == "str":
+        ml = spec.get("max_len")
+        if not _is_int(ml) or not 1 <= ml <= MAX_STR_LEN:
+            raise PolicyError(f"{where}: a str argument needs max_len, an int from 1 to {MAX_STR_LEN}")
+    if t == "int":
+        lo, hi = spec.get("min"), spec.get("max")
+        if not (_is_int(lo) and _is_int(hi)) or not -INT_LIMIT <= lo <= hi <= INT_LIMIT:
+            raise PolicyError(f"{where}: an int argument needs int min <= max, within {INT_LIMIT}")
     if t == "enum" and not spec.get("values"):
         raise PolicyError(f"{where}: an enum argument needs values")
     if t == "device" and not spec.get("kind"):
@@ -154,7 +192,15 @@ def parse_policy(raw: Any, source: str = "") -> Policy:
         raise PolicyError("policy: version must be 1")
 
     settings = raw.get("settings") or {}
-    _check_keys(settings, {"personal_idle_seconds", "undo_seconds"}, "settings")
+    if not isinstance(settings, dict):
+        raise PolicyError("settings: must be a mapping")
+    _check_keys(settings, set(SETTINGS_RANGE), "settings")
+    values = dict(SETTINGS_DEFAULT)
+    for k, v in settings.items():
+        lo, hi = SETTINGS_RANGE[k]
+        if not _is_int(v) or not lo <= v <= hi:
+            raise PolicyError(f"settings.{k}: must be an int from {lo} to {hi}")
+        values[k] = v
 
     rooms: dict[str, Room] = {}
     for name, r in (_req(raw, "rooms", "policy") or {}).items():
@@ -189,7 +235,7 @@ def parse_policy(raw: Any, source: str = "") -> Policy:
             raise PolicyError(f"{where}: must be a mapping")
         _check_keys(
             a,
-            {"class", "args", "untrusted_output", "personal_output", "outbound", "instead"},
+            {"class", "args", "untrusted_output", "personal_output", "outbound", "instead", "undoable"},
             where,
         )
         cls = _cls(_req(a, "class", where), where)
@@ -197,14 +243,18 @@ def parse_policy(raw: Any, source: str = "") -> Policy:
         for spec in args:
             if spec.type == "device" and not any(d.kind == spec.kind for d in devices.values()):
                 raise PolicyError(f"{where}.args.{spec.name}: no device of kind {spec.kind!r}")
-        if cls == HANDOFF:
-            for spec in args:
-                if spec.type == "str" and (spec.max_len or 0) > 1000:
-                    raise PolicyError(f"{where}.args.{spec.name}: too long to show on a phone")
-        personal = bool(a.get("personal_output", False))
+        flags = {}
+        for flag in ("untrusted_output", "personal_output", "outbound", "undoable"):
+            v = a.get(flag, False)
+            if not isinstance(v, bool):
+                raise PolicyError(f"{where}.{flag}: must be true or false")
+            flags[flag] = v
+        if flags["undoable"] and cls != HOUSEHOLD:
+            raise PolicyError(f"{where}: only class 1 actions can be undoable")
+        personal = flags["personal_output"]
         if personal and cls < PERSONAL:
             raise PolicyError(f"{where}: personal_output needs class 2 or higher")
-        outbound = bool(a.get("outbound", False))
+        outbound = flags["outbound"]
         if outbound and cls != ANSWER and cls < HANDOFF:
             # Class 1 and 2 actions must not send data out of the house.
             raise PolicyError(f"{where}: outbound is allowed only for class 0 (web search) or 3+")
@@ -212,10 +262,11 @@ def parse_policy(raw: Any, source: str = "") -> Policy:
             name=name,
             cls=cls,
             args=args,
-            untrusted_output=bool(a.get("untrusted_output", False)) or personal,
+            untrusted_output=flags["untrusted_output"] or personal,
             personal_output=personal,
             outbound=outbound,
             instead=str(a.get("instead", "")),
+            undoable=flags["undoable"],
         )
     if not actions:
         raise PolicyError("policy: at least one action is needed")
@@ -224,16 +275,38 @@ def parse_policy(raw: Any, source: str = "") -> Policy:
         actions=actions,
         devices=devices,
         rooms=rooms,
-        personal_idle_seconds=int(settings.get("personal_idle_seconds", 120)),
-        undo_seconds=int(settings.get("undo_seconds", 300)),
+        personal_idle_seconds=values["personal_idle_seconds"],
+        personal_max_seconds=values["personal_max_seconds"],
+        undo_seconds=values["undo_seconds"],
         source=source,
     )
+
+
+class _StrictLoader(yaml.SafeLoader):
+    """SafeLoader that refuses duplicate keys.
+
+    Plain YAML keeps the last of two equal keys, so a second `lock.unlock`
+    entry appended to the file would silently replace the first.
+    """
+
+
+def _no_duplicates(loader: _StrictLoader, node: yaml.MappingNode, deep: bool = False):
+    seen = set()
+    for key_node, _ in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if key in seen:
+            raise yaml.constructor.ConstructorError(None, None, f"duplicate key {key!r}", key_node.start_mark)
+        seen.add(key)
+    return loader.construct_mapping(node, deep)
+
+
+_StrictLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _no_duplicates)
 
 
 def load_policy(path: str | Path) -> Policy:
     p = Path(path)
     try:
-        raw = yaml.safe_load(p.read_text())
+        raw = yaml.load(p.read_text(), Loader=_StrictLoader)  # noqa: S506 - SafeLoader subclass
     except (OSError, yaml.YAMLError) as e:
         raise PolicyError(f"{p}: cannot read: {e}") from e
     return parse_policy(raw, source=str(p))

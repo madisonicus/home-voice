@@ -65,3 +65,29 @@ def test_bad_policy_refused(raw, fn):
 def test_personal_output_implies_untrusted(raw):
     p = parse_policy(raw)
     assert p.actions["calendar.read"].untrusted_output
+
+
+@pytest.mark.parametrize("fn", [
+    lambda r: r["settings"].update(personal_idle_seconds=10**9),
+    lambda r: r["settings"].update(personal_idle_seconds=True),
+    lambda r: r["settings"].update(personal_idle_seconds=-1),
+    lambda r: r["settings"].update(personal_idle_seconds="120"),
+    lambda r: r["settings"].update(personal_max_seconds=10**9),
+    lambda r: r["actions"]["timer.start"]["args"]["minutes"].update(max=float("inf")),
+    lambda r: r["actions"]["timer.start"]["args"]["minutes"].update(min=10, max=5),
+    lambda r: r["actions"]["list.add"]["args"]["item"].update(max_len=float("inf")),
+    lambda r: r["actions"]["list.add"]["args"]["item"].update(max_len=0),
+    lambda r: r["actions"]["list.add"]["args"]["item"].update(max_len=1001),
+    lambda r: r["actions"]["lock.unlock"].update(undoable=True),
+    lambda r: r["actions"]["list.add"].update(undoable="yes"),
+])
+def test_bad_values_refused(raw, fn):
+    with pytest.raises(PolicyError):
+        parse_policy(mutate(raw, fn))
+
+
+def test_duplicate_key_refused(tmp_path):
+    f = tmp_path / "p.yml"
+    f.write_text(EXAMPLE.read_text() + "\n  lock.unlock: {class: 1, args: {device: {type: device, kind: lock}}}\n")
+    with pytest.raises(PolicyError, match="duplicate"):
+        load_policy(f)

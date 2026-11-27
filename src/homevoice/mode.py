@@ -18,6 +18,21 @@ class Mode(str, Enum):
     OFF = "off"
 
 
+def mode_signature(path: str | Path | None) -> tuple | None:
+    """What the switch looks like now: its mode plus the file's identity.
+
+    A flip and a flip back between two requests leaves the same mode but a
+    new mtime, so a window opened before the flips can still tell.
+    """
+    if path is None:
+        return None
+    try:
+        st = Path(path).stat()
+    except OSError:
+        return (read_mode(path),)
+    return (read_mode(path), st.st_ino, st.st_mtime_ns, st.st_size)
+
+
 def read_mode(path: str | Path | None) -> Mode:
     if path is None:
         return Mode.ANSWER_ONLY

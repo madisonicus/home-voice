@@ -15,6 +15,7 @@ enforced"):
 4. Class 4 is refused, with where to do it instead. Then the room caps the class.
 5. Class 3 is a handoff to the person with an open personal window.
 6. Class 2 needs an open personal window and no web content in the session.
+   A model-proposed class 2 write is refused in a tainted session.
 7. Class 1 from the model is refused when the session is tainted. The intent
    matcher acts on the person's own words, so it is not.
 8. Class 0 is allowed. Outbound class 0 (web search) is refused while the
@@ -32,8 +33,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable
 
-from .mode import Mode, read_mode
-from .policy import ANSWER, HANDOFF, HOUSEHOLD, NEVER, PERSONAL, Action, Policy
+from .mode import Mode, mode_signature, read_mode
+from .policy import ANSWER, HANDOFF, HOUSEHOLD, NEVER, PERSONAL, Action, Policy, clean_text
 
 
 class Source(str, Enum):
@@ -80,6 +81,8 @@ class Session:
     web: bool = False  # outbound web content reached the model's context
     person: str | None = None  # whose personal window is open
     window_last_speech: float | None = None
+    window_opened: float | None = None
+    window_mode: tuple | None = None  # the mode switch as it was when the window opened
 
     def reset(self) -> None:
         self.tainted = False
@@ -90,12 +93,14 @@ class Session:
     def end_window(self) -> None:
         self.person = None
         self.window_last_speech = None
+        self.window_opened = None
+        self.window_mode = None
 
 
 @dataclass
 class _Done:
     at: float
-    room: str
+    rooms: frozenset[str]  # the session's room and the rooms of the devices it touched
     action: str
     args: dict[str, Any]
 
@@ -125,13 +130,25 @@ class Broker:
         self._sessions.append(s)
         return s
 
-    def open_window(self, session: Session, person: str) -> None:
-        """Called only after the person approved on their phone (passkey)."""
+    def open_window(self, session: Session, person: str) -> bool:
+        """Called only after the person approved on their phone (passkey).
+
+        Refused unless the mode switch is `full`. The window remembers the
+        switch, so any flip after this ends it.
+        """
+        sig = mode_signature(self.mode_path)
+        if sig is None or sig[0] is not Mode.FULL:
+            session.end_window()
+            return False
+        now = self.clock()
         session.person = person
-        session.window_last_speech = self.clock()
+        session.window_last_speech = now
+        session.window_opened = now
+        session.window_mode = sig
+        return True
 
     def heard_speech(self, session: Session) -> None:
-        if session.person is not None:
+        if self._window_open(session):
             session.window_last_speech = self.clock()
 
     def mute_pressed(self, room: str) -> None:
@@ -140,9 +157,15 @@ class Broker:
                 s.end_window()
 
     def _window_open(self, session: Session) -> bool:
-        if session.person is None or session.window_last_speech is None:
+        if session.person is None or session.window_last_speech is None or session.window_opened is None:
             return False
-        if self.clock() - session.window_last_speech > self.policy.personal_idle_seconds:
+        now = self.clock()
+        if (
+            now - session.window_last_speech > self.policy.personal_idle_seconds
+            # Speech keeps a window open, and a TV speaks too: cap it outright.
+            or now - session.window_opened > self.policy.personal_max_seconds
+            or mode_signature(self.mode_path) != session.window_mode
+        ):
             session.end_window()
             return False
         return True
@@ -172,6 +195,7 @@ class Broker:
         ok, args, why, devices = self._check_args(action, proposal.args)
         if not ok:
             return self._deny(name, action.cls, f"bad arguments: {why}", "I didn't get that. Please say it again.")
+        rooms = frozenset([session.room] + [d.room for d in devices if d.room])
 
         cls = max([action.cls] + [d.cls for d in devices if d.cls is not None])
 
@@ -201,24 +225,28 @@ class Broker:
             if session.web:
                 return self._deny(name, cls, "personal data and web content never meet",
                                   "Say the wake word again to start fresh, then ask me.")
+            if proposal.source is Source.MODEL and session.tainted and not action.personal_output:
+                return self._deny(name, cls, "tainted session, model proposal, personal write",
+                                  "Say the wake word again to start fresh, then ask me.")
             if not self._window_open(session):
                 return Decision(Verdict.APPROVAL_NEEDED, name, cls, "class 2 needs a personal window",
                                 "Check your phone to approve.", args)
-            return self._allow(session, action, cls, args, f"For {session.person}:")
+            return self._allow(session, action, cls, args, f"For {session.person}:", rooms)
 
         if cls == HOUSEHOLD:
             if proposal.source is Source.MODEL and session.tainted:
                 return self._deny(name, cls, "tainted session, model proposal",
                                   "Say that again in your own words and I'll do it.")
-            return self._allow(session, action, cls, args, "")
+            return self._allow(session, action, cls, args, "", rooms)
 
         # Class 0.
         if action.outbound and session.personal_data:
             return self._deny(name, cls, "personal data and web content never meet",
                               "I can't search while your personal data is open. Say the wake word again first.")
-        return self._allow(session, action, cls, args, "")
+        return self._allow(session, action, cls, args, "", rooms)
 
-    def _allow(self, session: Session, action: Action, cls: int, args: dict[str, Any], say: str) -> Decision:
+    def _allow(self, session: Session, action: Action, cls: int, args: dict[str, Any], say: str,
+               rooms: frozenset[str]) -> Decision:
         if action.untrusted_output:
             session.tainted = True
         if action.personal_output:
@@ -226,8 +254,8 @@ class Broker:
         if action.outbound:
             session.web = True
             session.tainted = True
-        if cls == HOUSEHOLD:
-            self._done.append(_Done(self.clock(), session.room, action.name, dict(args)))
+        if cls == HOUSEHOLD and action.undoable:
+            self._done.append(_Done(self.clock(), rooms, action.name, dict(args)))
         return Decision(Verdict.ALLOW, action.name, cls, "allowed", say, args, session.person)
 
     @staticmethod
@@ -248,9 +276,9 @@ class Broker:
                 if isinstance(v, bool) or not isinstance(v, int) or not (spec.min <= v <= spec.max):
                     return False, {}, f"{spec.name} out of range", []
             elif spec.type == "str":
-                if not isinstance(v, str) or not v.strip() or len(v) > spec.max_len:
-                    return False, {}, f"{spec.name} not a short string", []
-                v = v.strip()
+                v = clean_text(v)
+                if v is None or len(v) > spec.max_len:
+                    return False, {}, f"{spec.name} not a short plain string", []
             elif spec.type == "enum":
                 if v not in spec.values:
                     return False, {}, f"{spec.name} not in {spec.values}", []
@@ -265,11 +293,14 @@ class Broker:
     # -- undo -----------------------------------------------------------------
 
     def recent_household_actions(self, room: str) -> list[tuple[str, dict[str, Any]]]:
-        """Class 1 actions in this room in the last undo window, newest first.
+        """Undoable class 1 actions for this room in the undo window, newest first.
 
-        The caller reverts them all: one injected "undo" can then not leave
-        some of several injected actions in place.
+        An action counts for the room it was said in and for the rooms of the
+        devices it touched. The caller reverts them all, so one injected
+        "undo" cannot leave some of several injected actions in place. Only
+        actions the policy marks `undoable` are listed: the revert of "lock"
+        is "unlock", which is never class 1.
         """
         cutoff = self.clock() - self.policy.undo_seconds
         self._done = [d for d in self._done if d.at >= cutoff]
-        return [(d.action, d.args) for d in reversed(self._done) if d.room == room]
+        return [(d.action, d.args) for d in reversed(self._done) if room in d.rooms]
