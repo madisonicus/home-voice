@@ -47,5 +47,14 @@ The phone handoff for class 3 defeats them anyway.
 - Never add a fallback that turns a refusal into an allow: no "spoken yes"
   when the identity provider is down, no permissive default for a missing
   file.
+- GitHub Actions are pinned to full commit SHAs, with the version in a
+  comment. A tag can be moved to point at other code; a SHA cannot.
+  Dependabot proposes SHA updates weekly.
+- CI installs Python dependencies from `requirements-ci.txt`, pinned by
+  hash. Regenerate it with the command at its top after checking each new
+  release on its project page. Dependabot waits 7 days before proposing a
+  new release, because compromised releases are usually pulled within days.
+- Workflows hold no secrets and run with read-only `contents` permission, so
+  a pull request from a stranger has nothing to steal.
 - No house details in this repo: no device names, rooms, people, addresses,
   logs or secrets. They belong in the deployment's own policy file.
