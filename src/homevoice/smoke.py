@@ -33,11 +33,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--policy", default=str(ROOT / "examples" / "policy.yml"))
     ap.add_argument("--cases", default=str(ROOT / "smoke" / "cases.yml"))
     ap.add_argument("--think", action="store_true", help="turn model thinking on (off for voice)")
+    ap.add_argument("--priority", type=int, choices=(0, 1, 2), help="server scheduling tier (2 is voice); above 0 needs --priority-key-file")
+    ap.add_argument("--priority-key-file", help="owner-only file holding the server's priority key")
     args = ap.parse_args(argv)
 
     policy = load_policy(args.policy)
     cases = yaml.safe_load(Path(args.cases).read_text())["cases"]
-    client = OllamaClient(model=args.model, base_url=args.base_url, think=args.think, timeout=120)
+    client = OllamaClient(model=args.model, base_url=args.base_url, think=args.think, timeout=120,
+                          priority=args.priority, priority_key_file=args.priority_key_file)
 
     with tempfile.TemporaryDirectory() as tmp:
         mode = Path(tmp) / "mode"

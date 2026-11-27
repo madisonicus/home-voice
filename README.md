@@ -99,6 +99,10 @@ python3 -m pytest
 python3 -m homevoice.smoke --model <ollama model> --base-url http://127.0.0.1:11434
 ```
 
+On a server with priority tiers, add `--priority 2 --priority-key-file <path>`
+to run as voice. The key file must be readable only by its owner; the client
+refuses it otherwise and never prints the key.
+
 It measures whether the model picks the right tool and how fast. On a Mac
 Studio M5 Ultra (2026-11-27), `qwen3.6:35b-a3b` with thinking off got 17 of 17
 right at 0.16 s per call (median); a 27B dense model got 14 and a 9B got 12.
