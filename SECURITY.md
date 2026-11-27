@@ -35,6 +35,10 @@ The phone handoff for class 3 defeats them anyway.
 
 - **The broker is the only wall.** It must hold no rights it does not need.
   Class 3 rights (unlock, send) stay on the person's phone.
+- **A priority marker is not a wall.** Voice requests get top priority on the
+  model server, but a header or option any caller can set proves nothing.
+  The gateway or an allowlist on the server grants the tier from the
+  caller's identity, and anything else strips the marker.
 - **The model's system prompt is not a wall.** Nothing here depends on it.
 - **Smart-home hubs' own "exposed entity" lists are not a wall** for the
   broker's token. Keep locks and alarms out of reach of any token the broker
