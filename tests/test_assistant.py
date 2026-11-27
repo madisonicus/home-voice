@@ -133,7 +133,7 @@ def test_answer_only_mode_offers_class0_only(setup, tmp_path):
     (tmp_path / "mode").write_text("answer-only")
     s = broker.new_session("kitchen")
     asst.handle(s, "hello")
-    assert llm.offered[0] == {tool_name("answer"), tool_name("web.search")}
+    assert llm.offered[0] == {tool_name("web.search")}
 
 
 def test_device_enum_excludes_class4_device(setup):
@@ -254,3 +254,9 @@ def test_client_ignores_proxy_and_refuses_redirect(monkeypatch):
     with pytest.raises(urllib.error.HTTPError, match="refused redirect"):
         client.chat([], [])
     srv.shutdown()
+
+
+def test_answer_is_not_offered_as_a_tool(setup):
+    asst, broker, llm, ex = setup()
+    s = broker.new_session("kitchen")
+    assert tool_name("answer") not in {t["function"]["name"] for t in asst.tools(s)}

@@ -99,7 +99,11 @@ python3 -m pytest
 python3 -m homevoice.smoke --model <ollama model> --base-url http://127.0.0.1:11434
 ```
 
-It measures whether the model picks the right tool and how fast. It touches
+It measures whether the model picks the right tool and how fast. On a Mac
+Studio M5 Ultra (2026-11-27), `qwen3.6:35b-a3b` with thinking off got 17 of 17
+right at 0.16 s per call (median); a 27B dense model got 14 and a 9B got 12.
+The 9B also said it had done things it never called a tool for, which is why
+the spoken confirmation of an action comes from the broker, not the model. It touches
 nothing real. Safety does not depend on its score: the policy tests prove the
 rules without a model.
 
